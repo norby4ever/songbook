@@ -5,9 +5,7 @@ const GITHUB_CONFIG = {
 };
 
 const FILE_PATH = 'songs.json';
-// Для ЧТЕНИЯ (без токена) - используем raw.githubusercontent.com
 const RAW_URL = `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/main/${FILE_PATH}`;
-// Для ЗАПИСИ (с токеном) - используем API
 const API_URL = `https://api.github.com/repos/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/contents/${FILE_PATH}`;
 
 // Глобальные переменные
@@ -31,10 +29,9 @@ const saveSongBtn = document.getElementById('saveSongBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const closeBtn = document.querySelector('.close');
 
-// ========== СОРТИРОВКА ПЕСЕН ПО АЛФАВИТУ ==========
+// ========== СОРТИРОВКА ==========
 function sortSongs() {
     songs.sort((a, b) => {
-        // Сортируем по названию, игнорируя регистр
         const titleA = a.title.toLowerCase();
         const titleB = b.title.toLowerCase();
         if (titleA < titleB) return -1;
@@ -43,18 +40,17 @@ function sortSongs() {
     });
 }
 
-// ========== РАБОТА С ТОКЕНОМ (ТОЛЬКО ДЛЯ ЗАПИСИ) ==========
+// ========== ТОКЕН ==========
 function getToken() {
     let token = localStorage.getItem('github_token');
     if (!token) {
         token = prompt(
             '🔑 Введите GitHub Personal Access Token\n\n' +
-            'Токен нужен ТОЛЬКО для сохранения песен.\n' +
-            'Для просмотра токен не требуется.\n\n' +
-            'Как получить токен:\n' +
+            'Токен нужен ТОЛЬКО для сохранения песен.\n\n' +
+            'Как получить:\n' +
             '1. GitHub → Settings → Developer settings\n' +
             '2. Personal access tokens → Tokens (classic)\n' +
-            '3. Отметьте галочку "repo"\n' +
+            '3. Отметьте "repo"\n' +
             '4. Скопируйте токен'
         );
         if (token) {
@@ -78,12 +74,11 @@ function setStatus(message, isError = false) {
     }
 }
 
-// ========== КОДИРОВАНИЕ ==========
 function utf8ToBase64(str) {
     return btoa(unescape(encodeURIComponent(str)));
 }
 
-// ========== ЧТЕНИЕ (БЕЗ ТОКЕНА!) ==========
+// ========== ЗАГРУЗКА (без токена) ==========
 async function loadSongsFromGitHub() {
     setStatus('📥 Загрузка песен...');
 
@@ -91,8 +86,9 @@ async function loadSongsFromGitHub() {
         const response = await fetch(RAW_URL);
 
         if (response.status === 404) {
-            setStatus('📝 Файл песен не найден. Добавьте первую песню!');
+            setStatus('📝 Файл песен не найден');
             songs = [];
+            sortSongs();
             renderAll();
             return true;
         }
@@ -104,8 +100,6 @@ async function loadSongsFromGitHub() {
         const content = await response.text();
         const jsonData = JSON.parse(content);
         songs = jsonData.songs || [];
-
-        // СОРТИРУЕМ ПЕСНИ ПОСЛЕ ЗАГРУЗКИ
         sortSongs();
 
         setStatus(`✅ Загружено ${songs.length} песен`);
@@ -114,23 +108,19 @@ async function loadSongsFromGitHub() {
 
     } catch (error) {
         console.error('Ошибка загрузки:', error);
-        setStatus(`❌ Ошибка загрузки: ${error.message}`, true);
+        setStatus(`❌ Ошибка: ${error.message}`, true);
 
         const backup = localStorage.getItem('songs_backup');
         if (backup) {
             songs = JSON.parse(backup);
             sortSongs();
-            setStatus('📱 Загружена локальная копия');
-            renderAll();
-        } else {
-            songs = [];
             renderAll();
         }
         return false;
     }
 }
 
-// ========== ЗАПИСЬ (С ТОКЕНОМ!) ==========
+// ========== СОХРАНЕНИЕ (с токеном) ==========
 async function saveSongsToGitHub() {
     const token = getToken();
     if (!token) {
@@ -141,27 +131,35 @@ async function saveSongsToGitHub() {
     setStatus('💾 Сохранение на GitHub...');
 
     try {
-        // Перед сохранением сортируем
+        // Сортируем перед сохранением
         sortSongs();
 
-        const getResponse = await fetch(API_URL, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github+json'
-            }
-        });
-
-        let shaToUse = null;
-        if (getResponse.ok) {
-            const fileData = await getResponse.json();
-            shaToUse = fileData.sha;
-        }
-
+        // Подготавливаем данные
         const data = { songs: songs };
         const content = JSON.stringify(data, null, 2);
         const encodedContent = utf8ToBase64(content);
 
+        // Пытаемся получить актуальный SHA перед сохранением
+        let shaToUse = null;
+        try {
+            const getResponse = await fetch(API_URL, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/vnd.github+json'
+                }
+            });
+
+            if (getResponse.ok) {
+                const fileData = await getResponse.json();
+                shaToUse = fileData.sha;
+                console.log('Получен SHA:', shaToUse);
+            }
+        } catch (e) {
+            console.log('Файл возможно ещё не существует');
+        }
+
+        // Формируем запрос на сохранение
         const requestBody = {
             message: `Обновление песенника: ${new Date().toLocaleString('ru-RU')}`,
             content: encodedContent
@@ -170,6 +168,8 @@ async function saveSongsToGitHub() {
         if (shaToUse) {
             requestBody.sha = shaToUse;
         }
+
+        console.log('Отправляем запрос на сохранение...');
 
         const response = await fetch(API_URL, {
             method: 'PUT',
@@ -183,28 +183,29 @@ async function saveSongsToGitHub() {
 
         if (!response.ok) {
             const error = await response.json();
+            console.error('Ошибка API:', error);
             throw new Error(error.message || 'Ошибка сохранения');
         }
 
         const result = await response.json();
         currentFileSha = result.content.sha;
 
+        // Сохраняем резервную копию
         localStorage.setItem('songs_backup', JSON.stringify(songs));
 
         setStatus('✅ Сохранено на GitHub!');
+        console.log('Сохранение успешно!');
         return true;
 
     } catch (error) {
         console.error('Ошибка сохранения:', error);
         setStatus(`❌ Ошибка: ${error.message}`, true);
-
         localStorage.setItem('songs_backup', JSON.stringify(songs));
-        setStatus('💾 Сохранено только в браузере');
         return false;
     }
 }
 
-// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+// ========== ВСПОМОГАТЕЛЬНЫЕ ==========
 function generateId() {
     return Date.now() + Math.random() * 10000;
 }
@@ -269,8 +270,13 @@ function renderSongs() {
             if (confirm('Вы уверены, что хотите удалить эту песню?')) {
                 songs = songs.filter(s => s.id !== id);
                 sortSongs();
-                await saveSongsToGitHub();
-                renderAll();
+                const saved = await saveSongsToGitHub();
+                if (saved) {
+                    renderAll();
+                    setStatus('🗑 Песня удалена');
+                } else {
+                    alert('Ошибка удаления!');
+                }
             }
         });
     });
@@ -289,7 +295,7 @@ function renderAll() {
     renderSongs();
 }
 
-// ========== КРУД ОПЕРАЦИИ ==========
+// ========== КРУД ==========
 function addSong() {
     if (!editModal) return;
     modalTitle.textContent = 'Добавить песню';
@@ -338,21 +344,20 @@ async function saveSong() {
         });
     }
 
-    // Сортируем после добавления/изменения
     sortSongs();
 
-    const success = await saveSongsToGitHub();
-    if (success) {
+    const saved = await saveSongsToGitHub();
+    if (saved) {
         closeModal();
         renderAll();
-        setStatus('✅ Песня сохранена на GitHub!');
+        setStatus('✅ Песня сохранена!');
     } else {
         alert('Ошибка сохранения! Проверьте консоль (F12)');
     }
 }
 
 async function syncWithGitHub() {
-    setStatus('🔄 Принудительная синхронизация...');
+    setStatus('🔄 Синхронизация...');
     await loadSongsFromGitHub();
 }
 
@@ -391,5 +396,4 @@ async function init() {
     await loadSongsFromGitHub();
 }
 
-// Запуск
 init();
