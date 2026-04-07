@@ -6,10 +6,14 @@ const GITHUB_CONFIG = {
 };
 
 const FILE_PATH = 'songs.json';
-const RAW_URL = `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/${GITHUB_CONFIG.BRANCH}/${FILE_PATH}`;
 const API_URL = `https://api.github.com/repos/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/contents/${FILE_PATH}`;
 
-// Глобальные переменные
+// Функция для получения URL с anti-cache параметром
+function getRawUrl() {
+    // Добавляем timestamp, чтобы избежать кэширования
+    return `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/${GITHUB_CONFIG.BRANCH}/${FILE_PATH}?t=${Date.now()}`;
+}
+
 let songs = [];
 let currentFileSha = null;
 
@@ -30,29 +34,15 @@ const saveSongBtn = document.getElementById('saveSongBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const closeBtn = document.querySelector('.close');
 
-// ========== СОРТИРОВКА ==========
 function sortSongs() {
-    songs.sort((a, b) => {
-        const titleA = a.title.toLowerCase();
-        const titleB = b.title.toLowerCase();
-        if (titleA < titleB) return -1;
-        if (titleA > titleB) return 1;
-        return 0;
-    });
+    songs.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
 }
 
-// ========== ТОКЕН ==========
 function getToken() {
     let token = localStorage.getItem('github_token');
     if (!token) {
-        token = prompt(
-            '🔑 Введите GitHub Personal Access Token\n\n' +
-            'Токен нужен ДЛЯ СОХРАНЕНИЯ песен.\n' +
-            'Для просмотра токен не нужен.'
-        );
-        if (token) {
-            localStorage.setItem('github_token', token);
-        }
+        token = prompt('🔑 Введите GitHub Personal Access Token (нужен для сохранения)');
+        if (token) localStorage.setItem('github_token', token);
     }
     return token;
 }
@@ -75,134 +65,101 @@ function utf8ToBase64(str) {
     return btoa(unescape(encodeURIComponent(str)));
 }
 
-// ========== ЗАГРУЗКА ==========
-async function loadSongsFromGitHub() {
+// ========== ЗАГРУЗКА (без кэша) ==========
+async function loadSongs() {
     setStatus('📥 Загрузка песен...');
-
     try {
-        // Пробуем загрузить через raw.githubusercontent.com
-        const response = await fetch(RAW_URL);
+        const url = getRawUrl(); // Свежий URL с timestamp
+        console.log('Загрузка с:', url);
 
-        if (response.status === 404) {
-            setStatus('📝 Создаём новый файл песен');
-            songs = [];
-            sortSongs();
-            renderAll();
-            return true;
-        }
+        const response = await fetch(url, {
+            cache: 'no-store',  // Запрещаем кэширование
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        });
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-        const content = await response.text();
-        const jsonData = JSON.parse(content);
+        const jsonData = await response.json();
         songs = jsonData.songs || [];
         sortSongs();
 
+        console.log('Загружены песни:', songs.map(s => s.title));
         setStatus(`✅ Загружено ${songs.length} песен`);
         renderAll();
-        return true;
-
     } catch (error) {
         console.error('Ошибка загрузки:', error);
         setStatus(`❌ Ошибка: ${error.message}`, true);
-
-        // Пробуем загрузить из localStorage
-        const backup = localStorage.getItem('songs_backup');
-        if (backup) {
-            songs = JSON.parse(backup);
-            sortSongs();
-            renderAll();
-            setStatus('📱 Загружена локальная копия');
-        }
-        return false;
+        songs = [];
+        renderAll();
     }
 }
 
 // ========== СОХРАНЕНИЕ ==========
-async function saveSongsToGitHub() {
+async function saveSongs() {
     const token = getToken();
     if (!token) {
-        setStatus('❌ Для сохранения нужен токен', true);
+        setStatus('❌ Токен не введён', true);
         return false;
     }
 
-    // Проверяем, есть ли песни для сохранения
-    if (songs.length === 0) {
-        setStatus('⚠️ Нет песен для сохранения', true);
-        return false;
-    }
-
-    setStatus('💾 Сохранение на GitHub...');
+    setStatus('💾 Сохранение...');
 
     try {
         sortSongs();
 
-        // Формируем данные для сохранения
-        const data = { songs: songs };
-        const content = JSON.stringify(data, null, 2);
+        const content = JSON.stringify({ songs: songs }, null, 2);
         const encodedContent = utf8ToBase64(content);
 
-        console.log('Сохраняемые данные:', data);
-        console.log('Количество песен:', songs.length);
+        console.log('Сохраняем песен:', songs.length);
+        console.log('Содержимое:', content.substring(0, 200));
 
-        // Получаем текущий SHA файла
-        const getResponse = await fetch(API_URL, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github+json'
-            }
+        // Получаем текущий SHA
+        const getRes = await fetch(API_URL, {
+            headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        let shaToUse = null;
-        if (getResponse.ok) {
-            const fileData = await getResponse.json();
-            shaToUse = fileData.sha;
-            console.log('SHA файла:', shaToUse);
-        } else if (getResponse.status === 404) {
-            console.log('Файл не существует, будет создан');
-        } else {
-            throw new Error(`Ошибка получения SHA: ${getResponse.status}`);
+        let sha = null;
+        if (getRes.ok) {
+            const data = await getRes.json();
+            sha = data.sha;
+            console.log('SHA файла:', sha);
+        } else if (getRes.status !== 404) {
+            throw new Error(`Ошибка получения файла: ${getRes.status}`);
         }
 
-        // Формируем запрос
-        const requestBody = {
-            message: `Обновление песенника: ${new Date().toLocaleString('ru-RU')}`,
+        // Сохраняем
+        const body = {
+            message: `Обновление: ${new Date().toLocaleString()}`,
             content: encodedContent,
             branch: GITHUB_CONFIG.BRANCH
         };
+        if (sha) body.sha = sha;
 
-        if (shaToUse) {
-            requestBody.sha = shaToUse;
-        }
-
-        // Отправляем на GitHub
-        const response = await fetch(API_URL, {
+        const putRes = await fetch(API_URL, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${token}`,
-                'Accept': 'application/vnd.github+json',
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(body)
         });
 
-        if (!response.ok) {
-            const error = await response.json();
-            console.error('Ошибка API:', error);
-            throw new Error(error.message || 'Ошибка сохранения');
+        if (!putRes.ok) {
+            const error = await putRes.json();
+            throw new Error(error.message || `HTTP ${putRes.status}`);
         }
 
-        const result = await response.json();
-        currentFileSha = result.content.sha;
-
-        // Сохраняем резервную копию
         localStorage.setItem('songs_backup', JSON.stringify(songs));
+        setStatus(`✅ Сохранено ${songs.length} песен!`);
 
-        setStatus(`✅ Сохранено ${songs.length} песен на GitHub!`);
-        console.log('Сохранение успешно!');
+        // После сохранения ПРИНУДИТЕЛЬНО перезагружаем (сбрасываем кэш)
+        setTimeout(() => {
+            loadSongs();
+        }, 500);
+
         return true;
 
     } catch (error) {
@@ -213,41 +170,21 @@ async function saveSongsToGitHub() {
     }
 }
 
-// ========== ВСПОМОГАТЕЛЬНЫЕ ==========
-function generateId() {
-    return Date.now();
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// ========== РЕНДЕРИНГ ==========
+// ========== ОСТАЛЬНЫЕ ФУНКЦИИ (те же) ==========
 function renderToc(filter = '') {
     if (!tocDiv) return;
-
-    const filterLower = filter.toLowerCase().trim();
-    let filteredSongs = filterLower === ''
-        ? songs
-        : songs.filter(song => song.title.toLowerCase().includes(filterLower));
-
-    if (filteredSongs.length === 0) {
+    const filtered = filter ? songs.filter(s => s.title.toLowerCase().includes(filter.toLowerCase())) : songs;
+    if (filtered.length === 0) {
         tocDiv.innerHTML = '<p class="empty-message">😔 Песни не найдены</p>';
         return;
     }
-
-    tocDiv.innerHTML = filteredSongs.map(song =>
-        `<a href="#song-${song.id}">${escapeHtml(song.title)}</a>`
-    ).join('');
+    tocDiv.innerHTML = filtered.map(song => `<a href="#song-${song.id}">${escapeHtml(song.title)}</a>`).join('');
 }
 
 function renderSongs() {
     if (!songsContainer) return;
-
     if (songs.length === 0) {
-        songsContainer.innerHTML = '<div class="empty-message">📝 Пока нет песен. Добавьте первую!</div>';
+        songsContainer.innerHTML = '<div class="empty-message">📝 Нет песен. Добавьте первую!</div>';
         return;
     }
 
@@ -266,24 +203,16 @@ function renderSongs() {
     `).join('');
 
     document.querySelectorAll('.edit-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const id = parseFloat(btn.getAttribute('data-id'));
-            editSong(id);
-        });
+        btn.addEventListener('click', () => editSong(parseFloat(btn.dataset.id)));
     });
-
     document.querySelectorAll('.delete-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            const id = parseFloat(btn.getAttribute('data-id'));
-            if (confirm('Вы уверены, что хотите удалить эту песню?')) {
-                songs = songs.filter(s => s.id !== id);
-                sortSongs();
-                await saveSongsToGitHub();
-                renderAll();
+        btn.addEventListener('click', async () => {
+            if (confirm('Удалить песню?')) {
+                songs = songs.filter(s => s.id !== parseFloat(btn.dataset.id));
+                await saveSongs();
             }
         });
     });
-
     document.querySelectorAll('.back-to-top').forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
@@ -293,12 +222,20 @@ function renderSongs() {
 }
 
 function renderAll() {
-    const searchTerm = searchInput ? searchInput.value : '';
-    renderToc(searchTerm);
+    renderToc(searchInput?.value || '');
     renderSongs();
 }
 
-// ========== КРУД ==========
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function generateId() {
+    return Date.now();
+}
+
 function addSong() {
     if (!editModal) return;
     modalTitle.textContent = 'Добавить песню';
@@ -310,7 +247,7 @@ function addSong() {
 
 function editSong(id) {
     const song = songs.find(s => s.id === id);
-    if (song && editModal) {
+    if (song) {
         modalTitle.textContent = 'Редактировать песню';
         songTitleInput.value = song.title;
         songTextInput.value = song.text;
@@ -324,84 +261,44 @@ async function saveSong() {
     const text = songTextInput.value;
     const editId = editIdInput.value;
 
-    if (!title) {
-        alert('Введите название песни');
-        return;
-    }
-
-    if (!text) {
-        alert('Введите текст песни');
+    if (!title || !text) {
+        alert('Заполните все поля');
         return;
     }
 
     if (editId) {
-        // Редактирование
-        const index = songs.findIndex(s => s.id === parseFloat(editId));
-        if (index !== -1) {
-            songs[index] = { ...songs[index], title, text };
-        }
+        const idx = songs.findIndex(s => s.id === parseFloat(editId));
+        if (idx !== -1) songs[idx] = { ...songs[idx], title, text };
     } else {
-        // Добавление
-        const newSong = {
-            id: generateId(),
-            title: title,
-            text: text
-        };
-        songs.push(newSong);
-        console.log('Добавлена новая песня:', newSong);
+        songs.push({ id: generateId(), title, text });
     }
 
-    console.log('Всего песен после операции:', songs.length);
     sortSongs();
-
-    const saved = await saveSongsToGitHub();
-    if (saved) {
-        closeModal();
-        renderAll();
-        setStatus('✅ Песня сохранена!');
-    } else {
-        alert('Ошибка сохранения! Проверьте консоль (F12)');
-    }
-}
-
-async function syncWithGitHub() {
-    setStatus('🔄 Синхронизация...');
-    await loadSongsFromGitHub();
+    await saveSongs();
+    closeModal();
 }
 
 function closeModal() {
-    if (editModal) editModal.style.display = 'none';
+    editModal.style.display = 'none';
 }
 
-function handleSearch() {
-    renderToc(searchInput.value);
-}
-
-function clearSearch() {
-    if (searchInput) {
+function initEventListeners() {
+    if (searchInput) searchInput.addEventListener('input', () => renderToc(searchInput.value));
+    if (clearSearchBtn) clearSearchBtn.addEventListener('click', () => {
         searchInput.value = '';
         renderToc('');
-    }
-}
-
-// ========== ИНИЦИАЛИЗАЦИЯ ==========
-function initEventListeners() {
-    if (searchInput) searchInput.addEventListener('input', handleSearch);
-    if (clearSearchBtn) clearSearchBtn.addEventListener('click', clearSearch);
+    });
     if (addSongBtn) addSongBtn.addEventListener('click', addSong);
-    if (syncBtn) syncBtn.addEventListener('click', syncWithGitHub);
+    if (syncBtn) syncBtn.addEventListener('click', loadSongs);
     if (saveSongBtn) saveSongBtn.addEventListener('click', saveSong);
     if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
-
-    window.addEventListener('click', (e) => {
-        if (editModal && e.target === editModal) closeModal();
-    });
+    window.addEventListener('click', (e) => { if (e.target === editModal) closeModal(); });
 }
 
 async function init() {
     initEventListeners();
-    await loadSongsFromGitHub();
+    await loadSongs();
 }
 
 init();
