@@ -48,12 +48,7 @@ function getToken() {
         token = prompt(
             '🔑 Введите GitHub Personal Access Token\n\n' +
             'Токен нужен ДЛЯ СОХРАНЕНИЯ песен.\n' +
-            'Для просмотра токен не нужен.\n\n' +
-            'Как получить:\n' +
-            '1. GitHub → Settings → Developer settings\n' +
-            '2. Personal access tokens → Tokens (classic)\n' +
-            '3. Галочка "repo"\n' +
-            '4. Скопируйте токен'
+            'Для просмотра токен не нужен.'
         );
         if (token) {
             localStorage.setItem('github_token', token);
@@ -80,15 +75,16 @@ function utf8ToBase64(str) {
     return btoa(unescape(encodeURIComponent(str)));
 }
 
-// ========== ЗАГРУЗКА (без токена) ==========
+// ========== ЗАГРУЗКА ==========
 async function loadSongsFromGitHub() {
     setStatus('📥 Загрузка песен...');
 
     try {
+        // Пробуем загрузить через raw.githubusercontent.com
         const response = await fetch(RAW_URL);
 
         if (response.status === 404) {
-            setStatus('📝 Файл песен не найден');
+            setStatus('📝 Создаём новый файл песен');
             songs = [];
             sortSongs();
             renderAll();
@@ -112,17 +108,19 @@ async function loadSongsFromGitHub() {
         console.error('Ошибка загрузки:', error);
         setStatus(`❌ Ошибка: ${error.message}`, true);
 
+        // Пробуем загрузить из localStorage
         const backup = localStorage.getItem('songs_backup');
         if (backup) {
             songs = JSON.parse(backup);
             sortSongs();
             renderAll();
+            setStatus('📱 Загружена локальная копия');
         }
         return false;
     }
 }
 
-// ========== СОХРАНЕНИЕ (с токеном) ==========
+// ========== СОХРАНЕНИЕ ==========
 async function saveSongsToGitHub() {
     const token = getToken();
     if (!token) {
@@ -130,91 +128,89 @@ async function saveSongsToGitHub() {
         return false;
     }
 
-    setStatus('💾 Сохранение на GitHub...');
-
-    // Максимум 3 попытки при конфликте
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-            sortSongs();
-
-            const data = { songs: songs };
-            const content = JSON.stringify(data, null, 2);
-            const encodedContent = utf8ToBase64(content);
-
-            // Получаем актуальный SHA перед каждой попыткой
-            const getResponse = await fetch(API_URL, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/vnd.github+json'
-                }
-            });
-
-            let shaToUse = null;
-            if (getResponse.ok) {
-                const fileData = await getResponse.json();
-                shaToUse = fileData.sha;
-                console.log(`Попытка ${attempt}: SHA = ${shaToUse.substring(0, 7)}...`);
-            } else if (getResponse.status === 404) {
-                console.log(`Попытка ${attempt}: Файл будет создан`);
-            } else {
-                throw new Error(`HTTP ${getResponse.status}`);
-            }
-
-            const requestBody = {
-                message: `Обновление песенника: ${new Date().toLocaleString('ru-RU')}`,
-                content: encodedContent,
-                branch: GITHUB_CONFIG.BRANCH
-            };
-
-            if (shaToUse) {
-                requestBody.sha = shaToUse;
-            }
-
-            const response = await fetch(API_URL, {
-                method: 'PUT',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/vnd.github+json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(requestBody)
-            });
-
-            if (response.status === 409) {
-                // Конфликт - пробуем ещё раз
-                console.log(`⚠️ Конфликт версий, попытка ${attempt} из 3...`);
-                await new Promise(resolve => setTimeout(resolve, 500));
-                continue;
-            }
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.message || 'Ошибка сохранения');
-            }
-
-            const result = await response.json();
-            currentFileSha = result.content.sha;
-
-            localStorage.setItem('songs_backup', JSON.stringify(songs));
-
-            setStatus('✅ Сохранено на GitHub!');
-            console.log('Сохранение успешно!');
-            return true;
-
-        } catch (error) {
-            if (attempt === 3) {
-                console.error('Ошибка сохранения:', error);
-                setStatus(`❌ Ошибка: ${error.message}`, true);
-                localStorage.setItem('songs_backup', JSON.stringify(songs));
-                return false;
-            }
-            console.log(`Повторная попытка ${attempt + 1}...`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
+    // Проверяем, есть ли песни для сохранения
+    if (songs.length === 0) {
+        setStatus('⚠️ Нет песен для сохранения', true);
+        return false;
     }
 
-    return false;
+    setStatus('💾 Сохранение на GitHub...');
+
+    try {
+        sortSongs();
+
+        // Формируем данные для сохранения
+        const data = { songs: songs };
+        const content = JSON.stringify(data, null, 2);
+        const encodedContent = utf8ToBase64(content);
+
+        console.log('Сохраняемые данные:', data);
+        console.log('Количество песен:', songs.length);
+
+        // Получаем текущий SHA файла
+        const getResponse = await fetch(API_URL, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/vnd.github+json'
+            }
+        });
+
+        let shaToUse = null;
+        if (getResponse.ok) {
+            const fileData = await getResponse.json();
+            shaToUse = fileData.sha;
+            console.log('SHA файла:', shaToUse);
+        } else if (getResponse.status === 404) {
+            console.log('Файл не существует, будет создан');
+        } else {
+            throw new Error(`Ошибка получения SHA: ${getResponse.status}`);
+        }
+
+        // Формируем запрос
+        const requestBody = {
+            message: `Обновление песенника: ${new Date().toLocaleString('ru-RU')}`,
+            content: encodedContent,
+            branch: GITHUB_CONFIG.BRANCH
+        };
+
+        if (shaToUse) {
+            requestBody.sha = shaToUse;
+        }
+
+        // Отправляем на GitHub
+        const response = await fetch(API_URL, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/vnd.github+json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            console.error('Ошибка API:', error);
+            throw new Error(error.message || 'Ошибка сохранения');
+        }
+
+        const result = await response.json();
+        currentFileSha = result.content.sha;
+
+        // Сохраняем резервную копию
+        localStorage.setItem('songs_backup', JSON.stringify(songs));
+
+        setStatus(`✅ Сохранено ${songs.length} песен на GitHub!`);
+        console.log('Сохранение успешно!');
+        return true;
+
+    } catch (error) {
+        console.error('Ошибка сохранения:', error);
+        setStatus(`❌ Ошибка: ${error.message}`, true);
+        localStorage.setItem('songs_backup', JSON.stringify(songs));
+        return false;
+    }
 }
 
 // ========== ВСПОМОГАТЕЛЬНЫЕ ==========
@@ -339,18 +335,23 @@ async function saveSong() {
     }
 
     if (editId) {
+        // Редактирование
         const index = songs.findIndex(s => s.id === parseFloat(editId));
         if (index !== -1) {
             songs[index] = { ...songs[index], title, text };
         }
     } else {
-        songs.push({
+        // Добавление
+        const newSong = {
             id: generateId(),
             title: title,
             text: text
-        });
+        };
+        songs.push(newSong);
+        console.log('Добавлена новая песня:', newSong);
     }
 
+    console.log('Всего песен после операции:', songs.length);
     sortSongs();
 
     const saved = await saveSongsToGitHub();
