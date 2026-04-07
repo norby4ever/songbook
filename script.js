@@ -31,9 +31,20 @@ const saveSongBtn = document.getElementById('saveSongBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const closeBtn = document.querySelector('.close');
 
+// ========== СОРТИРОВКА ПЕСЕН ПО АЛФАВИТУ ==========
+function sortSongs() {
+    songs.sort((a, b) => {
+        // Сортируем по названию, игнорируя регистр
+        const titleA = a.title.toLowerCase();
+        const titleB = b.title.toLowerCase();
+        if (titleA < titleB) return -1;
+        if (titleA > titleB) return 1;
+        return 0;
+    });
+}
+
 // ========== РАБОТА С ТОКЕНОМ (ТОЛЬКО ДЛЯ ЗАПИСИ) ==========
 function getToken() {
-    // Токен запрашиваем ТОЛЬКО когда нужно сохранить
     let token = localStorage.getItem('github_token');
     if (!token) {
         token = prompt(
@@ -51,11 +62,6 @@ function getToken() {
         }
     }
     return token;
-}
-
-function clearToken() {
-    localStorage.removeItem('github_token');
-    setStatus('🔄 Токен удалён. При сохранении запросит заново');
 }
 
 function setStatus(message, isError = false) {
@@ -82,7 +88,6 @@ async function loadSongsFromGitHub() {
     setStatus('📥 Загрузка песен...');
 
     try {
-        // Пытаемся загрузить через raw (без токена)
         const response = await fetch(RAW_URL);
 
         if (response.status === 404) {
@@ -100,6 +105,9 @@ async function loadSongsFromGitHub() {
         const jsonData = JSON.parse(content);
         songs = jsonData.songs || [];
 
+        // СОРТИРУЕМ ПЕСНИ ПОСЛЕ ЗАГРУЗКИ
+        sortSongs();
+
         setStatus(`✅ Загружено ${songs.length} песен`);
         renderAll();
         return true;
@@ -108,10 +116,10 @@ async function loadSongsFromGitHub() {
         console.error('Ошибка загрузки:', error);
         setStatus(`❌ Ошибка загрузки: ${error.message}`, true);
 
-        // Пробуем загрузить из localStorage как запасной вариант
         const backup = localStorage.getItem('songs_backup');
         if (backup) {
             songs = JSON.parse(backup);
+            sortSongs();
             setStatus('📱 Загружена локальная копия');
             renderAll();
         } else {
@@ -124,7 +132,6 @@ async function loadSongsFromGitHub() {
 
 // ========== ЗАПИСЬ (С ТОКЕНОМ!) ==========
 async function saveSongsToGitHub() {
-    // Токен запрашиваем ТОЛЬКО сейчас
     const token = getToken();
     if (!token) {
         setStatus('❌ Для сохранения нужен токен', true);
@@ -134,7 +141,9 @@ async function saveSongsToGitHub() {
     setStatus('💾 Сохранение на GitHub...');
 
     try {
-        // Сначала получаем текущий SHA файла (через API, нужен токен)
+        // Перед сохранением сортируем
+        sortSongs();
+
         const getResponse = await fetch(API_URL, {
             method: 'GET',
             headers: {
@@ -149,7 +158,6 @@ async function saveSongsToGitHub() {
             shaToUse = fileData.sha;
         }
 
-        // Подготавливаем данные для сохранения
         const data = { songs: songs };
         const content = JSON.stringify(data, null, 2);
         const encodedContent = utf8ToBase64(content);
@@ -163,7 +171,6 @@ async function saveSongsToGitHub() {
             requestBody.sha = shaToUse;
         }
 
-        // Сохраняем через API (нужен токен)
         const response = await fetch(API_URL, {
             method: 'PUT',
             headers: {
@@ -182,7 +189,6 @@ async function saveSongsToGitHub() {
         const result = await response.json();
         currentFileSha = result.content.sha;
 
-        // Сохраняем локальную копию
         localStorage.setItem('songs_backup', JSON.stringify(songs));
 
         setStatus('✅ Сохранено на GitHub!');
@@ -192,7 +198,6 @@ async function saveSongsToGitHub() {
         console.error('Ошибка сохранения:', error);
         setStatus(`❌ Ошибка: ${error.message}`, true);
 
-        // Сохраняем локально как запасной вариант
         localStorage.setItem('songs_backup', JSON.stringify(songs));
         setStatus('💾 Сохранено только в браузере');
         return false;
@@ -215,7 +220,7 @@ function renderToc(filter = '') {
     if (!tocDiv) return;
 
     const filterLower = filter.toLowerCase().trim();
-    const filteredSongs = filterLower === ''
+    let filteredSongs = filterLower === ''
         ? songs
         : songs.filter(song => song.title.toLowerCase().includes(filterLower));
 
@@ -251,7 +256,6 @@ function renderSongs() {
         </div>
     `).join('');
 
-    // Обработчики
     document.querySelectorAll('.edit-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = parseFloat(btn.getAttribute('data-id'));
@@ -264,6 +268,7 @@ function renderSongs() {
             const id = parseFloat(btn.getAttribute('data-id'));
             if (confirm('Вы уверены, что хотите удалить эту песню?')) {
                 songs = songs.filter(s => s.id !== id);
+                sortSongs();
                 await saveSongsToGitHub();
                 renderAll();
             }
@@ -321,19 +326,20 @@ async function saveSong() {
     }
 
     if (editId) {
-        // Редактирование
         const index = songs.findIndex(s => s.id === parseFloat(editId));
         if (index !== -1) {
             songs[index] = { ...songs[index], title, text };
         }
     } else {
-        // Добавление
         songs.push({
             id: generateId(),
             title: title,
             text: text
         });
     }
+
+    // Сортируем после добавления/изменения
+    sortSongs();
 
     const success = await saveSongsToGitHub();
     if (success) {
@@ -382,7 +388,7 @@ function initEventListeners() {
 
 async function init() {
     initEventListeners();
-    await loadSongsFromGitHub();  // Загрузка без токена!
+    await loadSongsFromGitHub();
 }
 
 // Запуск
