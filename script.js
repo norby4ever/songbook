@@ -6,13 +6,8 @@ const GITHUB_CONFIG = {
 };
 
 const FILE_PATH = 'songs.json';
+const RAW_URL = `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/${GITHUB_CONFIG.BRANCH}/${FILE_PATH}`;
 const API_URL = `https://api.github.com/repos/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/contents/${FILE_PATH}`;
-
-// Функция для получения URL с anti-cache параметром
-function getRawUrl() {
-    // Добавляем timestamp, чтобы избежать кэширования
-    return `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/${GITHUB_CONFIG.BRANCH}/${FILE_PATH}?t=${Date.now()}`;
-}
 
 let songs = [];
 let currentFileSha = null;
@@ -65,15 +60,13 @@ function utf8ToBase64(str) {
     return btoa(unescape(encodeURIComponent(str)));
 }
 
-// ========== ЗАГРУЗКА (без кэша) ==========
+// ========== ЗАГРУЗКА (без параметров, но с заголовками anti-cache) ==========
 async function loadSongs() {
     setStatus('📥 Загрузка песен...');
     try {
-        const url = getRawUrl(); // Свежий URL с timestamp
-        console.log('Загрузка с:', url);
-
-        const response = await fetch(url, {
-            cache: 'no-store',  // Запрещаем кэширование
+        // Используем API вместо RAW для чтения (без CORS проблем)
+        const response = await fetch(RAW_URL, {
+            method: 'GET',
             headers: {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'Pragma': 'no-cache'
@@ -92,8 +85,18 @@ async function loadSongs() {
     } catch (error) {
         console.error('Ошибка загрузки:', error);
         setStatus(`❌ Ошибка: ${error.message}`, true);
-        songs = [];
-        renderAll();
+
+        // Пробуем загрузить из localStorage
+        const backup = localStorage.getItem('songs_backup');
+        if (backup) {
+            songs = JSON.parse(backup);
+            sortSongs();
+            renderAll();
+            setStatus('📱 Загружена локальная копия');
+        } else {
+            songs = [];
+            renderAll();
+        }
     }
 }
 
@@ -114,7 +117,6 @@ async function saveSongs() {
         const encodedContent = utf8ToBase64(content);
 
         console.log('Сохраняем песен:', songs.length);
-        console.log('Содержимое:', content.substring(0, 200));
 
         // Получаем текущий SHA
         const getRes = await fetch(API_URL, {
@@ -125,7 +127,7 @@ async function saveSongs() {
         if (getRes.ok) {
             const data = await getRes.json();
             sha = data.sha;
-            console.log('SHA файла:', sha);
+            console.log('SHA файла:', sha.substring(0, 7));
         } else if (getRes.status !== 404) {
             throw new Error(`Ошибка получения файла: ${getRes.status}`);
         }
@@ -155,10 +157,8 @@ async function saveSongs() {
         localStorage.setItem('songs_backup', JSON.stringify(songs));
         setStatus(`✅ Сохранено ${songs.length} песен!`);
 
-        // После сохранения ПРИНУДИТЕЛЬНО перезагружаем (сбрасываем кэш)
-        setTimeout(() => {
-            loadSongs();
-        }, 500);
+        // Обновляем отображение
+        renderAll();
 
         return true;
 
@@ -170,7 +170,39 @@ async function saveSongs() {
     }
 }
 
-// ========== ОСТАЛЬНЫЕ ФУНКЦИИ (те же) ==========
+// ========== ПРИНУДИТЕЛЬНАЯ СИНХРОНИЗАЦИЯ (через API, а не RAW) ==========
+async function forceSync() {
+    setStatus('🔄 Принудительная синхронизация...');
+    const token = getToken();
+    if (!token) {
+        await loadSongs();
+        return;
+    }
+
+    try {
+        // Загружаем через API (а не RAW) для свежих данных
+        const response = await fetch(API_URL, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            const content = atob(data.content);
+            const jsonData = JSON.parse(content);
+            songs = jsonData.songs || [];
+            sortSongs();
+            renderAll();
+            setStatus(`✅ Синхронизировано: ${songs.length} песен`);
+        } else {
+            await loadSongs();
+        }
+    } catch (error) {
+        console.error(error);
+        await loadSongs();
+    }
+}
+
+// ========== РЕНДЕРИНГ ==========
 function renderToc(filter = '') {
     if (!tocDiv) return;
     const filtered = filter ? songs.filter(s => s.title.toLowerCase().includes(filter.toLowerCase())) : songs;
@@ -289,7 +321,7 @@ function initEventListeners() {
         renderToc('');
     });
     if (addSongBtn) addSongBtn.addEventListener('click', addSong);
-    if (syncBtn) syncBtn.addEventListener('click', loadSongs);
+    if (syncBtn) syncBtn.addEventListener('click', forceSync);
     if (saveSongBtn) saveSongBtn.addEventListener('click', saveSong);
     if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
