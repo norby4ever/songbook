@@ -1,11 +1,12 @@
 // ========== КОНФИГУРАЦИЯ ==========
 const GITHUB_CONFIG = {
     OWNER: 'norby4ever',
-    REPO: 'songbook'
+    REPO: 'songbook',
+    BRANCH: 'main'
 };
 
 const FILE_PATH = 'songs.json';
-const RAW_URL = `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/main/${FILE_PATH}`;
+const RAW_URL = `https://raw.githubusercontent.com/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/${GITHUB_CONFIG.BRANCH}/${FILE_PATH}`;
 const API_URL = `https://api.github.com/repos/${GITHUB_CONFIG.OWNER}/${GITHUB_CONFIG.REPO}/contents/${FILE_PATH}`;
 
 // Глобальные переменные
@@ -46,11 +47,12 @@ function getToken() {
     if (!token) {
         token = prompt(
             '🔑 Введите GitHub Personal Access Token\n\n' +
-            'Токен нужен ТОЛЬКО для сохранения песен.\n\n' +
+            'Токен нужен ДЛЯ СОХРАНЕНИЯ песен.\n' +
+            'Для просмотра токен не нужен.\n\n' +
             'Как получить:\n' +
             '1. GitHub → Settings → Developer settings\n' +
             '2. Personal access tokens → Tokens (classic)\n' +
-            '3. Отметьте "repo"\n' +
+            '3. Галочка "repo"\n' +
             '4. Скопируйте токен'
         );
         if (token) {
@@ -131,45 +133,39 @@ async function saveSongsToGitHub() {
     setStatus('💾 Сохранение на GitHub...');
 
     try {
-        // Сортируем перед сохранением
         sortSongs();
 
-        // Подготавливаем данные
         const data = { songs: songs };
         const content = JSON.stringify(data, null, 2);
         const encodedContent = utf8ToBase64(content);
 
-        // Пытаемся получить актуальный SHA перед сохранением
-        let shaToUse = null;
-        try {
-            const getResponse = await fetch(API_URL, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/vnd.github+json'
-                }
-            });
-
-            if (getResponse.ok) {
-                const fileData = await getResponse.json();
-                shaToUse = fileData.sha;
-                console.log('Получен SHA:', shaToUse);
+        // Получаем актуальный SHA
+        const getResponse = await fetch(API_URL, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/vnd.github+json'
             }
-        } catch (e) {
-            console.log('Файл возможно ещё не существует');
+        });
+
+        let shaToUse = null;
+        if (getResponse.ok) {
+            const fileData = await getResponse.json();
+            shaToUse = fileData.sha;
+            console.log('Найден SHA:', shaToUse);
+        } else {
+            console.log('Файл не существует, будет создан');
         }
 
-        // Формируем запрос на сохранение
         const requestBody = {
             message: `Обновление песенника: ${new Date().toLocaleString('ru-RU')}`,
-            content: encodedContent
+            content: encodedContent,
+            branch: GITHUB_CONFIG.BRANCH
         };
 
         if (shaToUse) {
             requestBody.sha = shaToUse;
         }
-
-        console.log('Отправляем запрос на сохранение...');
 
         const response = await fetch(API_URL, {
             method: 'PUT',
@@ -190,7 +186,6 @@ async function saveSongsToGitHub() {
         const result = await response.json();
         currentFileSha = result.content.sha;
 
-        // Сохраняем резервную копию
         localStorage.setItem('songs_backup', JSON.stringify(songs));
 
         setStatus('✅ Сохранено на GitHub!');
@@ -207,7 +202,7 @@ async function saveSongsToGitHub() {
 
 // ========== ВСПОМОГАТЕЛЬНЫЕ ==========
 function generateId() {
-    return Date.now() + Math.random() * 10000;
+    return Date.now();
 }
 
 function escapeHtml(text) {
@@ -270,13 +265,8 @@ function renderSongs() {
             if (confirm('Вы уверены, что хотите удалить эту песню?')) {
                 songs = songs.filter(s => s.id !== id);
                 sortSongs();
-                const saved = await saveSongsToGitHub();
-                if (saved) {
-                    renderAll();
-                    setStatus('🗑 Песня удалена');
-                } else {
-                    alert('Ошибка удаления!');
-                }
+                await saveSongsToGitHub();
+                renderAll();
             }
         });
     });
