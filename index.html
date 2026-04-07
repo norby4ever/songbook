@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мой песенник</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📖 Мой песенник</h1>
+        </header>
+
+        <div class="search-section">
+            <input type="text" id="searchInput" placeholder="🔍 Фильтр песен..." autocomplete="off">
+            <button id="clearSearchBtn" class="clear-btn">✖</button>
+        </div>
+
+        <div class="toc-section">
+            <h2>Содержание</h2>
+            <div id="toc"></div>
+        </div>
+
+        <button id="addSongBtn" class="add-btn">+ Добавить песню</button>
+
+        <div id="songsContainer"></div>
+    </div>
+
+    <!-- Модальное окно для добавления/редактирования -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2 id="modalTitle">Добавить песню</h2>
+            <label for="songTitle">Название песни:</label>
+            <input type="text" id="songTitle" placeholder="Например: Катюша" autocomplete="off">
+            
+            <label for="songText">Текст песни:</label>
+            <textarea id="songText" rows="12" placeholder="Введите текст песни..."></textarea>
+            
+            <input type="hidden" id="editId">
+            <div class="modal-buttons">
+                <button id="saveSongBtn" class="save-btn">Сохранить</button>
+                <button id="cancelBtn" class="cancel-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
